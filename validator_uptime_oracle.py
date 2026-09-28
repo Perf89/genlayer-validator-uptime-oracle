@@ -26,12 +26,70 @@ Consensus design
       points, i.e. +/-0.5%, to absorb LLM/source-read variance). Free-text
       `reasoning` is stored but never compared, since two LLMs will always
       phrase it differently.
+
+Result validation (before any state write)
+    LLM output is untrusted. Every consensus result is strictly validated
+    by `_validate_result` at three points: inside the leader, inside the
+    validator (for both the leader's and its own result), and once more
+    right before state is written. A result is accepted only if:
+      - claim_supported is a real JSON boolean (not the string "false")
+      - measured_uptime_bps is an int (not bool) in the range 0..10000
+      - reasoning is a string (stored truncated to 500 characters)
+    Malformed results make the validator disagree, so they can never be
+    finalized into state, and can never fail halfway through persistence.
 """
 
 from genlayer import *
 from dataclasses import dataclass
 import json
 import typing
+
+MAX_BPS = 10000
+MAX_REASONING_LEN = 500
+
+
+def _validate_result(data) -> dict:
+    """Strictly validate and normalize a consensus result.
+
+    Raises ValueError on anything malformed. Returns a clean dict with
+    exactly the three expected fields and correct types.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("result must be a JSON object")
+
+    claim_supported = data.get("claim_supported")
+    if not isinstance(claim_supported, bool):
+        raise ValueError("claim_supported must be a JSON boolean")
+
+    measured = data.get("measured_uptime_bps")
+    # bool is a subclass of int in Python, so exclude it explicitly
+    if isinstance(measured, bool) or not isinstance(measured, int):
+        raise ValueError("measured_uptime_bps must be an integer")
+    if measured < 0 or measured > MAX_BPS:
+        raise ValueError("measured_uptime_bps must be between 0 and 10000")
+
+    reasoning = data.get("reasoning")
+    if not isinstance(reasoning, str):
+        raise ValueError("reasoning must be a string")
+
+    return {
+        "claim_supported": claim_supported,
+        "measured_uptime_bps": measured,
+        "reasoning": reasoning[:MAX_REASONING_LEN],
+    }
+
+
+def _parse_llm_json(raw) -> typing.Any:
+    """Parse LLM output as JSON, tolerating markdown code fences."""
+    if not isinstance(raw, str):
+        raise ValueError("LLM response must be text")
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:]
+        text = text.strip()
+    return json.loads(text)
 
 
 @allow_storage
@@ -65,7 +123,7 @@ class ValidatorUptimeOracle(gl.Contract):
         """Register a new uptime claim. Does not verify it yet — call
         verify_attestation() separately so verification runs as its own
         consensus round with its own evidence read."""
-        if claimed_uptime_bps < 0 or claimed_uptime_bps > 10000:
+        if claimed_uptime_bps < 0 or claimed_uptime_bps > MAX_BPS:
             raise gl.vm.UserError("claimed_uptime_bps must be between 0 and 10000")
         if not evidence_url.startswith("https://"):
             raise gl.vm.UserError("evidence_url must be an https URL")
@@ -118,7 +176,10 @@ determine the validator's actual measured uptime and whether the claimed
 figure is supported by the evidence. If the evidence is missing, unrelated,
 or insufficient to judge, set claim_supported to false and explain why.
 
-Return strict JSON only, no extra text:
+Return strict JSON only, no extra text. Types are strict:
+claim_supported must be a JSON boolean (true or false, not a string),
+measured_uptime_bps must be an integer from 0 to 10000,
+reasoning must be a string.
 {{
     "measured_uptime_bps": <integer 0-10000>,
     "claim_supported": true or false,
@@ -126,27 +187,31 @@ Return strict JSON only, no extra text:
 }}
 """
             response = gl.nondet.exec_prompt(prompt)
-            return json.loads(response)
+            return _validate_result(_parse_llm_json(response))
 
         def validator_fn(leader_result) -> bool:
             if not isinstance(leader_result, gl.vm.Return):
                 return False
             try:
-                leader_data = leader_result.calldata
-                validator_data = leader_fn()  # independent re-derivation from the same evidence
+                # Both results must be well-formed before they are compared.
+                leader_data = _validate_result(leader_result.calldata)
+                validator_data = leader_fn()  # independent re-derivation, already validated
             except Exception:
                 return False
 
             # Decision fields only — reasoning text is never compared.
-            if leader_data.get("claim_supported") != validator_data.get("claim_supported"):
+            if leader_data["claim_supported"] != validator_data["claim_supported"]:
                 return False
-            leader_bps = leader_data.get("measured_uptime_bps")
-            validator_bps = validator_data.get("measured_uptime_bps")
-            if not isinstance(leader_bps, int) or not isinstance(validator_bps, int):
-                return False
-            return abs(leader_bps - validator_bps) <= 50  # +/-0.5% tolerance
+            diff = abs(leader_data["measured_uptime_bps"] - validator_data["measured_uptime_bps"])
+            return diff <= 50  # +/-0.5% tolerance
 
-        result = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
+        raw_result = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
+
+        # Final gate: never write state from an unvalidated result.
+        try:
+            result = _validate_result(raw_result)
+        except ValueError as e:
+            raise gl.vm.UserError(f"Invalid consensus result: {e}")
 
         self.attestations[att_id].status = "confirmed" if result["claim_supported"] else "rejected"
         self.attestations[att_id].confirmed_uptime_bps = u256(result["measured_uptime_bps"])

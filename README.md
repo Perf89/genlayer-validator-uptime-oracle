@@ -12,125 +12,117 @@ and confirms or rejects the claim, producing an on-chain, disputable attestation
 other contracts or off-chain systems can rely on without trusting the claimant or a
 single centralized oracle.
 
-Real-world use cases this primitive is meant to unlock:
+Real-world use cases:
 
 - **Staking-as-a-service marketplaces** — trust-minimized SLA verification between an
-  operator and a delegator, without either side running a centralized reputation
-  service.
-- **Slashing-insurance / cover products** — an underwriter needs a neutral, disputable
-  source of truth about whether a claimed incident/uptime figure is accurate.
-- **Validator reputation systems** — aggregating verified (not self-reported) uptime
-  history across networks.
+  operator and a delegator.
+- **Slashing-insurance / cover products** — a neutral, disputable source of truth about
+  whether a claimed uptime figure is accurate.
+- **Validator reputation systems** — aggregating verified (not self-reported) uptime.
 
-## Why this is a real primitive, not a demo
+## Design
 
-- It is **standalone and reusable**: any contract or frontend can call
-  `submit_attestation` / `verify_attestation` against any evidence URL and any claimed
-  metric — it is not wired to one specific dataset or network.
-- **State design** separates the claim (`submit_attestation`) from its verification
-  (`verify_attestation`) as two distinct consensus rounds, so a claim can sit pending,
-  be disputed, or be re-submitted without re-running evidence collection every time.
-- **Equivalence Principle is used for real, not as a format check.** The validator does
-  not just check that the leader returned valid JSON — it independently re-fetches the
-  same evidence URL and re-derives the verdict, then the two are compared on the
-  decision fields only (`claim_supported` exact match, `measured_uptime_bps` within
-  ±50 bps / ±0.5% tolerance). This is exactly the "independent comparison" pattern the
-  docs recommend over leader-output-only validation.
+### Two-step lifecycle
 
-## Consensus design
+`submit_attestation` records a claim as `pending`. `verify_attestation` runs a separate
+consensus round that reads the evidence and moves it to `confirmed` or `rejected`.
+Already-processed attestations cannot be verified again.
+
+### Consensus (Equivalence Principle, independent comparison)
 
 ```
 leader_fn():
     web_data = gl.nondet.web.get(evidence_url)
-    ask LLM to extract measured_uptime_bps + claim_supported from web_data
-    return structured JSON
+    ask LLM for {claim_supported, measured_uptime_bps, reasoning}
+    return _validate_result(parsed JSON)          # strict, see below
 
 validator_fn(leader_result):
-    re-fetch the same evidence_url
-    re-run the same extraction independently
+    leader_data    = _validate_result(leader_result)   # reject malformed leader output
+    validator_data = leader_fn()                       # independently re-fetch + re-derive
     accept only if:
-        - claim_supported matches exactly, AND
-        - measured_uptime_bps is within ±50 bps of the leader's value
+        claim_supported matches exactly, AND
+        |measured_uptime_bps difference| <= 50 bps (0.5%)
 ```
 
-Free-text `reasoning` is stored on-chain for transparency but is **never** compared
-between validators, since two independent LLM runs will always phrase their reasoning
-differently — only the decision fields need to agree.
+Free-text `reasoning` is stored for transparency but never compared, since two LLM runs
+will always phrase it differently.
+
+### Strict result validation before any state write
+
+LLM output is untrusted. `_validate_result` is applied at three points: in the leader,
+in the validator (to both the leader's result and its own), and once more immediately
+before state is written. A result is accepted only if:
+
+| Field | Requirement |
+|---|---|
+| `claim_supported` | a real JSON boolean — the string `"false"` (truthy in Python) is rejected |
+| `measured_uptime_bps` | an `int` (not `bool`, not `float`, not a string) in `0..10000` |
+| `reasoning` | a string (stored truncated to 500 characters) |
+
+Malformed results make validators disagree, so they can never be finalized into state,
+and can never fail halfway through persistence. `submit_attestation` additionally
+validates `claimed_uptime_bps` (0..10000) and requires an `https://` evidence URL.
+
+These rules are covered by offline tests (`tests/test_result_validation.py`) that load
+the helper functions straight from the contract source, so they always test exactly the
+code that is deployed:
+
+```
+python3 tests/test_result_validation.py
+```
 
 ## Deployed contract
+
+The source in this repository is byte-for-byte the source that was deployed.
 
 | Field | Value |
 |---|---|
 | Network | GenLayer Studio (Studionet) |
-| Contract | `Validator uptime oracle.py` |
-| Deployed address | `0x4E...8229` *(copy full address from Studio → contract header)* |
+| Deployed address | `<FULL ADDRESS OF THE NEW DEPLOYMENT>` |
+| Explorer | `https://explorer-studio.genlayer.com/address/<FULL ADDRESS>` |
 | Source | [`validator_uptime_oracle.py`](./validator_uptime_oracle.py) |
-
-> Replace the address above with the full value from the Studio contract panel
-> (click the copy icon next to "Deployed at").
 
 ## Live test evidence
 
-Two independent consensus rounds were run against real, public, unauthenticated data
-sources — one that does **not** support the claim, and one that does — to demonstrate
-that the contract genuinely discriminates between supported and unsupported claims
-rather than rubber-stamping every submission.
+Two consensus rounds against real, public, unauthenticated data sources: one claim the
+evidence does **not** support, and one it does.
 
-### Scenario 1 — Rejected claim (unsupported by evidence)
+### Scenario 1 — rejected claim (unsupported by evidence)
 
 | Field | Value |
 |---|---|
-| `attestation_id` | `1` |
 | `network` | `ethereum` |
 | `claimed_uptime_bps` | `9990` (99.90%) |
 | `evidence_url` | `https://beaconcha.in/api/v1/validator/1` |
-| Result | `claim_supported: false`, `measured_uptime_bps: 0` |
-| Tx (`verify_attestation`) | `0x8712471f883b3fc7192edfbb9d5b9b71e440f142985c7c9f0626009ebec03fe` |
-| Validator votes | 4/5 Agree that the claim is **unsupported** |
+| Result | `claim_supported: false` → `status: rejected` |
+| Tx (`verify_attestation`) | `<TX HASH>` |
 
-The AI validators independently read the evidence URL, found nothing that supported
-the claimed uptime figure, and rejected the claim — the correct outcome for unverifiable
-evidence.
-
-### Scenario 2 — Confirmed claim (supported by evidence)
+### Scenario 2 — confirmed claim (supported by evidence)
 
 | Field | Value |
 |---|---|
-| `attestation_id` | `5` |
 | `network` | `cosmos-hub` |
-| `claimed_uptime_bps` | `10000` (100%) |
 | `validator_address` | `cosmosvalcons1p2x4mv97rjta5sd69snn5ftya5zekwvvp9jjxu` |
+| `claimed_uptime_bps` | `10000` (100%) |
 | `evidence_url` | `https://cosmos-rest.publicnode.com/cosmos/slashing/v1beta1/signing_infos` |
-| Ground truth | `missed_blocks_counter: "0"` for this validator in the public Cosmos Hub REST API |
-| Result | `claim_supported: true`, `measured_uptime_bps: 10000` |
-| Tx (`verify_attestation`) | `0x02e1d90b222d49023e8b3cdc389affcba9973b90ab90e7b8d8957e799a5b1a9c` |
-| Validator votes | 3/5 Agree, 2/5 Disagree (`claude-sonnet-4.6`, `deepseek` disagreed) — majority accepted |
+| Ground truth | `missed_blocks_counter: "0"` for this validator |
+| Result | `claim_supported: true`, `measured_uptime_bps: 10000` → `status: confirmed` |
+| Tx (`verify_attestation`) | `<TX HASH>` |
 
-This round is the strongest evidence of genuine Equivalence Principle behavior: five
-different LLM providers (GPT-5.4, Gemini, Grok, Claude Sonnet 4.6, DeepSeek)
-independently parsed the same raw JSON evidence (a 600+ entry validator list) and did
-**not** all agree — three found and confirmed the specific validator's zero missed-block
-count, two did not. The protocol's majority rule resolved the disagreement correctly.
-This is real, disputable consensus over evidence — not a formality.
+In real runs, validators running different LLM providers do not always agree on the
+first read; the protocol's majority rule resolves it.
 
-## Reproducing these tests
+## Reproducing
 
-1. Open [GenLayer Studio](https://studio.genlayer.com), get testnet GEN from the 💧
-   faucet.
-2. Upload `validator_uptime_oracle.py` and deploy (constructor takes no arguments).
-3. Call `submit_attestation(validator_address, network, claimed_uptime_bps, evidence_url)`
-   with the values from either scenario above.
-4. Call `verify_attestation(attestation_id)` using the id returned by step 3.
-5. Call `get_attestation(attestation_id)` to read back the final `status`,
-   `confirmed_uptime_bps`, and `reasoning`.
+1. Open [GenLayer Studio](https://studio.genlayer.com) and deploy `validator_uptime_oracle.py`
+   (constructor takes no arguments).
+2. `submit_attestation(validator_address, network, claimed_uptime_bps, evidence_url)`
+   with the values from a scenario above; note the returned id.
+3. `verify_attestation(id)`.
+4. `get_attestation(id)` to read back `status`, `confirmed_uptime_bps`, `reasoning`.
 
 ## Files
 
-- [`validator_uptime_oracle.py`](./validator_uptime_oracle.py) — full contract source,
-  with an in-file docstring covering purpose and consensus design.
-- [`LICENSE`](./LICENSE) — MIT.
-
-## License
-
-MIT — see [`LICENSE`](./LICENSE). Fill in your name/handle as copyright holder before
-publishing.
+- [`validator_uptime_oracle.py`](./validator_uptime_oracle.py) — contract source
+- [`tests/test_result_validation.py`](./tests/test_result_validation.py) — offline validation tests
+- [`LICENSE`](./LICENSE) — MIT
