@@ -95,7 +95,7 @@ evidence does **not** support, and one it does.
 | `claimed_uptime_bps` | `9990` (99.90%) |
 | `evidence_url` | `https://beaconcha.in/api/v1/validator/1` |
 | Result | `claim_supported: false` → `status: rejected` |
-| Tx (`verify_attestation`) | `0x7fcae48c39c1d62413cf3327331f4c8c5e9fa87dda01fda5e5a1f636f4bb88b7` |
+| Tx (`verify_attestation`) | `0x406c2f8be4371e11b6fa142d367919c9f93ee8b6fc76356fcda383f7e6231754` |
 
 ### Scenario 2 — confirmed claim (supported by evidence)
 
@@ -107,7 +107,7 @@ evidence does **not** support, and one it does.
 | `evidence_url` | `https://cosmos-rest.publicnode.com/cosmos/slashing/v1beta1/signing_infos` |
 | Ground truth | `missed_blocks_counter: "0"` for this validator |
 | Result | `claim_supported: true`, `measured_uptime_bps: 10000` → `status: confirmed` |
-| Tx (`verify_attestation`) | `0x4b4c3eff3855c751f79f81c2d483ca17703f49a567ffcf549c7d57a118535538` |
+| Tx (`verify_attestation`) | `0x6e1ff6e841db1dc04bd6c85105b1589d45d4888c966a4fb88c94765e7bfc21e3` |
 
 In the Scenario 2 run the first leader's proposal was rejected by the majority of validators (leader rotation); the second round reached consensus and was accepted.
 
