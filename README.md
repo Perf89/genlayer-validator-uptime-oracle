@@ -109,8 +109,7 @@ evidence does **not** support, and one it does.
 | Result | `claim_supported: true`, `measured_uptime_bps: 10000` → `status: confirmed` |
 | Tx (`verify_attestation`) | `0x4b4c3eff3855c751f79f81c2d483ca17703f49a567ffcf549c7d57a118535538` |
 
-In real runs, validators running different LLM providers do not always agree on the
-first read; the protocol's majority rule resolves it.
+In the Scenario 2 run the first leader's proposal was rejected by the majority of validators (leader rotation); the second round reached consensus and was accepted.
 
 ## Reproducing
 
