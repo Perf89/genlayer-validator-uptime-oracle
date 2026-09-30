@@ -78,8 +78,8 @@ The source in this repository is byte-for-byte the source that was deployed.
 | Field | Value |
 |---|---|
 | Network | GenLayer Studio (Studionet) |
-| Deployed address | `<FULL ADDRESS OF THE NEW DEPLOYMENT>` |
-| Explorer | `https://explorer-studio.genlayer.com/address/<FULL ADDRESS>` |
+| Deployed address | `0xd4662F40ef362DEcFA9c7af7844E5E5968ab24F5` |
+| Explorer | `https://explorer-studio.genlayer.com/address/0xd4662F40ef362DEcFA9c7af7844E5E5968ab24F5` |
 | Source | [`validator_uptime_oracle.py`](./validator_uptime_oracle.py) |
 
 ## Live test evidence
@@ -95,7 +95,7 @@ evidence does **not** support, and one it does.
 | `claimed_uptime_bps` | `9990` (99.90%) |
 | `evidence_url` | `https://beaconcha.in/api/v1/validator/1` |
 | Result | `claim_supported: false` → `status: rejected` |
-| Tx (`verify_attestation`) | `<TX HASH>` |
+| Tx (`verify_attestation`) | `0x7fcae48c39c1d62413cf3327331f4c8c5e9fa87dda01fda5e5a1f636f4bb88b7` |
 
 ### Scenario 2 — confirmed claim (supported by evidence)
 
@@ -107,7 +107,7 @@ evidence does **not** support, and one it does.
 | `evidence_url` | `https://cosmos-rest.publicnode.com/cosmos/slashing/v1beta1/signing_infos` |
 | Ground truth | `missed_blocks_counter: "0"` for this validator |
 | Result | `claim_supported: true`, `measured_uptime_bps: 10000` → `status: confirmed` |
-| Tx (`verify_attestation`) | `<TX HASH>` |
+| Tx (`verify_attestation`) | `0x4b4c3eff3855c751f79f81c2d483ca17703f49a567ffcf549c7d57a118535538` |
 
 In real runs, validators running different LLM providers do not always agree on the
 first read; the protocol's majority rule resolves it.
